@@ -41,6 +41,8 @@ type Model struct {
 
 	annotations *annotation.MemoryStore
 	textInput   string
+	showOverlay bool
+	showHelp    bool
 }
 
 // NewModel creates a new Model with the given markdown content.
@@ -255,6 +257,18 @@ func (m Model) updateNormalMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.textInput = ""
 		return m, nil
 
+	case key.Matches(msg, m.keyMap.ShowAnnotation):
+		line := m.viewport.YOffset()
+		anns := m.annotations.GetByLine(line)
+		if len(anns) > 0 {
+			m.showOverlay = !m.showOverlay
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.Help):
+		m.showHelp = !m.showHelp
+		m.showOverlay = false
+		return m, nil
 	}
 
 	// Delegate remaining keys (j/k/up/down/pgup/pgdn/mouse) to viewport
@@ -311,6 +325,19 @@ func (m Model) View() tea.View {
 	footer := footerStyle.Render(footerContent)
 
 	content := strings.Join([]string{header, m.viewport.View(), footer}, "\n")
+
+	if m.showHelp {
+		overlay := renderHelpOverlay(m.width)
+		content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+	} else if m.showOverlay {
+		line := m.viewport.YOffset()
+		anns := m.annotations.GetByLine(line)
+		if len(anns) > 0 {
+			overlay := renderAnnotationOverlay(anns, m.width)
+			content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+		}
+	}
+
 	v.SetContent(content)
 	return v
 }
