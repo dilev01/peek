@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/dilev01/peek/internal/annotation"
 	"github.com/dilev01/peek/internal/audio"
+	"github.com/dilev01/peek/internal/markdown"
 	"github.com/dilev01/peek/internal/tui"
 	"github.com/dilev01/peek/internal/voice"
 )
@@ -47,6 +48,19 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error reading file: %v\n", err)
 		os.Exit(1)
+	}
+
+	// No TTY → render markdown to stdout (works inside Claude Code, pipes, etc.)
+	// Claude Code's Bash tool uses a pty that reports as terminal but has no /dev/tty,
+	// so we check for the actual device rather than relying on isatty.
+	if !hasTTY() {
+		rendered, err := markdown.Render(string(content), 100)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "render error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Print(rendered)
+		return
 	}
 
 	// Initialize PortAudio (non-fatal if it fails)
@@ -91,6 +105,17 @@ func main() {
 			fmt.Print(annotation.FormatSummary(result.FilePath, result.Duration, result.Annotations))
 		}
 	}
+}
+
+// hasTTY checks if we can actually open /dev/tty. Claude Code's Bash tool
+// uses a pty that passes isatty checks but has no real /dev/tty device.
+func hasTTY() bool {
+	f, err := os.Open("/dev/tty")
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }
 
 func findPlanFile(keyword string) string {
