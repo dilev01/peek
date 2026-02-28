@@ -8,6 +8,8 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/dilev01/peek/internal/markdown"
 )
 
 // Model is the main application model for peek.
@@ -46,16 +48,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		footerHeight := 1
 		verticalMargins := headerHeight + footerHeight
 
+		rendered, err := markdown.Render(m.rawMarkdown, msg.Width-8)
+		if err != nil {
+			rendered = m.rawMarkdown
+		}
+
 		if !m.ready {
 			m.viewport = viewport.New(
 				viewport.WithWidth(msg.Width),
 				viewport.WithHeight(msg.Height-verticalMargins),
 			)
-			m.viewport.SetContent(m.rawMarkdown)
+			m.viewport.SetContent(rendered)
 			m.ready = true
 		} else {
 			m.viewport.SetWidth(msg.Width)
 			m.viewport.SetHeight(msg.Height - verticalMargins)
+			m.viewport.SetContent(rendered)
 		}
 
 	case tea.KeyPressMsg:
