@@ -18,9 +18,14 @@ import (
 
 var version = "dev"
 
+const defaultPageSize = 80
+
 func main() {
 	findFlag := flag.String("find", "", "fuzzy-match a file in docs/plans/ by keyword")
 	versionFlag := flag.Bool("version", false, "print version")
+	pageFlag := flag.Int("page", 0, "page number for stdout mode (1-based)")
+	pageSizeFlag := flag.Int("page-size", defaultPageSize, "lines per page in stdout mode")
+	tocFlag := flag.Bool("toc", false, "print table of contents with page numbers")
 	flag.Parse()
 
 	if *versionFlag {
@@ -40,7 +45,7 @@ func main() {
 
 	if filePath == "" {
 		fmt.Fprintln(os.Stderr, "no markdown file found")
-		fmt.Fprintln(os.Stderr, "usage: peek [file.md] [--find keyword] [--version]")
+		fmt.Fprintln(os.Stderr, "usage: peek [file.md] [--find keyword] [--version] [--page N] [--toc]")
 		os.Exit(1)
 	}
 
@@ -50,20 +55,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// No TTY → render markdown to stdout (works inside Claude Code, pipes, etc.)
-	// Claude Code's Bash tool uses a pty that reports as terminal but has no /dev/tty,
-	// so we check for the actual device rather than relying on isatty.
-	if !hasTTY() {
-		rendered, err := markdown.Render(string(content), 100)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "render error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Print(rendered)
+	// --toc: print table of contents with page numbers
+	if *tocFlag {
+		printTOC(string(content), filePath, *pageSizeFlag)
 		return
 	}
 
-	// Initialize PortAudio (non-fatal if it fails)
+	// No TTY or --page flag → render markdown to stdout in pages
+	if !hasTTY() || *pageFlag > 0 {
+		renderPage(string(content), filePath, *pageFlag, *pageSizeFlag)
+		return
+	}
+
+	// Interactive TUI mode (real terminal)
 	var recorder audio.Recorder
 	if err := audio.Init(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: audio init failed: %v (keyboard-only mode)\n", err)
@@ -72,11 +76,9 @@ func main() {
 	}
 	defer audio.Terminate()
 
-	// Audio directory for WAV files
 	baseName := strings.TrimSuffix(filepath.Base(filePath), ".md")
 	audioDir := filepath.Join(filepath.Dir(filePath), ".peek", baseName)
 
-	// Whisper API key
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	var transcriber voice.Transcriber
 	if apiKey != "" {
@@ -107,8 +109,108 @@ func main() {
 	}
 }
 
-// hasTTY checks if we can actually open /dev/tty. Claude Code's Bash tool
-// uses a pty that passes isatty checks but has no real /dev/tty device.
+// renderPage renders a single page of the markdown file to stdout.
+// If page is 0, auto-pages (page 1). Prints a footer with page info.
+func renderPage(content, filePath string, page, pageSize int) {
+	rendered, err := markdown.Render(content, 100)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "render error: %v\n", err)
+		os.Exit(1)
+	}
+
+	lines := strings.Split(rendered, "\n")
+	totalLines := len(lines)
+	totalPages := (totalLines + pageSize - 1) / pageSize
+
+	if page <= 0 {
+		page = 1
+	}
+	if page > totalPages {
+		fmt.Fprintf(os.Stderr, "page %d out of range (1-%d)\n", page, totalPages)
+		os.Exit(1)
+	}
+
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if end > totalLines {
+		end = totalLines
+	}
+
+	fmt.Print(strings.Join(lines[start:end], "\n"))
+	fmt.Println()
+
+	// Footer
+	shortName := filepath.Base(filePath)
+	if page < totalPages {
+		fmt.Fprintf(os.Stderr, "\n── %s ── page %d/%d ── next: --page %d ──\n", shortName, page, totalPages, page+1)
+	} else {
+		fmt.Fprintf(os.Stderr, "\n── %s ── page %d/%d ── END ──\n", shortName, page, totalPages)
+	}
+}
+
+// printTOC prints a table of contents with heading names and which page they start on.
+func printTOC(content, filePath string, pageSize int) {
+	rendered, err := markdown.Render(content, 100)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "render error: %v\n", err)
+		os.Exit(1)
+	}
+
+	lines := strings.Split(rendered, "\n")
+	totalLines := len(lines)
+	totalPages := (totalLines + pageSize - 1) / pageSize
+
+	// Parse headings from raw markdown to get line numbers,
+	// then find them in rendered output.
+	headings := markdown.ParseHeadings(content)
+
+	fmt.Fprintf(os.Stderr, "── %s ── %d pages (%d lines, %d/page) ──\n\n", filepath.Base(filePath), totalPages, totalLines, pageSize)
+
+	for _, h := range headings {
+		// Find the heading text in rendered lines to get rendered line number
+		renderedLine := findRenderedLine(lines, h.Text)
+		page := (renderedLine / pageSize) + 1
+		indent := strings.Repeat("  ", h.Level-1)
+		fmt.Printf("%sp%-3d %s\n", indent, page, h.Text)
+	}
+
+	fmt.Println()
+}
+
+// findRenderedLine searches for a heading in the rendered output lines.
+func findRenderedLine(lines []string, headingText string) int {
+	// Strip markdown markers from heading text for matching
+	clean := strings.TrimSpace(headingText)
+	for i, line := range lines {
+		stripped := strings.TrimSpace(stripANSI(line))
+		if strings.Contains(stripped, clean) {
+			return i
+		}
+	}
+	return 0
+}
+
+// stripANSI removes ANSI escape sequences for text comparison.
+func stripANSI(s string) string {
+	var result strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until 'm' or end
+			j := i + 2
+			for j < len(s) && s[j] != 'm' {
+				j++
+			}
+			i = j + 1
+		} else {
+			result.WriteByte(s[i])
+			i++
+		}
+	}
+	return result.String()
+}
+
+// hasTTY checks if we can actually open /dev/tty.
 func hasTTY() bool {
 	f, err := os.Open("/dev/tty")
 	if err != nil {
@@ -122,7 +224,6 @@ func findPlanFile(keyword string) string {
 	pattern := fmt.Sprintf("docs/plans/*%s*.md", strings.ToLower(keyword))
 	matches, _ := filepath.Glob(pattern)
 	if len(matches) == 0 {
-		// Try from current directory
 		pattern = fmt.Sprintf("*%s*.md", strings.ToLower(keyword))
 		matches, _ = filepath.Glob(pattern)
 	}
