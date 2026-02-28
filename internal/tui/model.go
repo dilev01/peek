@@ -19,9 +19,14 @@ import (
 	"github.com/dilev01/peek/internal/voice"
 )
 
-// gutterStyle is a package-level cached style used by the gutter function.
-// Pre-computed once to avoid allocating a new lipgloss.Style per line per frame.
-var gutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+// Package-level cached styles to avoid per-line per-frame allocations.
+var (
+	gutterStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	cursorGutterStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Bold(true)
+	annotationMarkerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("204"))
+	cursorLineStyle       = lipgloss.NewStyle().Background(lipgloss.Color("236"))
+	emptyStyle            = lipgloss.NewStyle()
+)
 
 type inputMode int
 
@@ -487,6 +492,45 @@ func (m Model) View() tea.View {
 		return v
 	}
 
+	// Set cursor-aware gutter and line styling before rendering.
+	cursorLine := m.viewport.YOffset()
+	annotatedLines := m.annotations.AnnotatedLines()
+	annotatedSet := make(map[int]bool, len(annotatedLines))
+	for _, l := range annotatedLines {
+		annotatedSet[l] = true
+	}
+
+	m.viewport.LeftGutterFunc = func(info viewport.GutterContext) string {
+		if info.Soft {
+			return "     " + gutterStyle.Render("\u2502") + " "
+		}
+		if info.Index >= info.TotalLines {
+			return "   ~ " + gutterStyle.Render("\u2502") + " "
+		}
+		lineNum := fmt.Sprintf("%4d", info.Index+1)
+		isCursor := info.Index == cursorLine
+		hasAnnotation := annotatedSet[info.Index]
+
+		if isCursor {
+			sep := "\u25b8" // ▸
+			if hasAnnotation {
+				sep = "\u25cf" // ●
+			}
+			return cursorGutterStyle.Render(lineNum) + " " + cursorGutterStyle.Render(sep) + " "
+		}
+		if hasAnnotation {
+			return gutterStyle.Render(lineNum) + " " + annotationMarkerStyle.Render("\u25cf") + " "
+		}
+		return gutterStyle.Render(lineNum) + " \u2502 "
+	}
+
+	m.viewport.StyleLineFunc = func(line int) lipgloss.Style {
+		if line == cursorLine {
+			return cursorLineStyle
+		}
+		return emptyStyle
+	}
+
 	headerStyle := lipgloss.NewStyle().
 		Background(lipgloss.Color("62")).
 		Foreground(lipgloss.Color("230")).
@@ -494,10 +538,25 @@ func (m Model) View() tea.View {
 
 	header := headerStyle.Render(" peek")
 
-	footerStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("236")).
-		Foreground(lipgloss.Color("243")).
-		Width(m.width)
+	// Mode-dependent footer styling.
+	var footerStyle lipgloss.Style
+	switch m.mode {
+	case modeSearch:
+		footerStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("17")).
+			Foreground(lipgloss.Color("75")).
+			Width(m.width)
+	case modeTextAnnotation:
+		footerStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("22")).
+			Foreground(lipgloss.Color("156")).
+			Width(m.width)
+	default:
+		footerStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("236")).
+			Foreground(lipgloss.Color("243")).
+			Width(m.width)
+	}
 
 	footerContent := m.footerContent()
 	footer := footerStyle.Render(footerContent)
