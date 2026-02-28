@@ -19,6 +19,10 @@ import (
 	"github.com/dilev01/peek/internal/voice"
 )
 
+// gutterStyle is a package-level cached style used by the gutter function.
+// Pre-computed once to avoid allocating a new lipgloss.Style per line per frame.
+var gutterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
 type inputMode int
 
 const (
@@ -72,6 +76,10 @@ type Model struct {
 	filePath    string
 	startTime   time.Time
 	exitResult  *ExitResult
+
+	// Cached render state: avoid re-rendering markdown when width hasn't changed.
+	cachedRender      string
+	cachedRenderWidth int
 }
 
 // ModelConfig holds configuration for creating a new Model.
@@ -137,20 +145,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		footerHeight := 1
 		verticalMargins := headerHeight + footerHeight
 
-		rendered, err := markdown.Render(m.rawMarkdown, msg.Width-8)
-		if err != nil {
-			rendered = m.rawMarkdown
+		// Only re-render markdown when the render width actually changes.
+		renderWidth := msg.Width - 8
+		if renderWidth != m.cachedRenderWidth || m.cachedRender == "" {
+			rendered, err := markdown.Render(m.rawMarkdown, renderWidth)
+			if err != nil {
+				rendered = m.rawMarkdown
+			}
+			m.cachedRender = rendered
+			m.cachedRenderWidth = renderWidth
 		}
 
+		// Use the package-level gutterStyle to avoid per-line allocations.
 		gutterFunc := func(info viewport.GutterContext) string {
 			if info.Soft {
-				return "     " + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("\u2502") + " "
+				return "     " + gutterStyle.Render("\u2502") + " "
 			}
 			if info.Index >= info.TotalLines {
-				return "   ~ " + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("\u2502") + " "
+				return "   ~ " + gutterStyle.Render("\u2502") + " "
 			}
-			style := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-			return style.Render(fmt.Sprintf("%4d", info.Index+1)) + " \u2502 "
+			return gutterStyle.Render(fmt.Sprintf("%4d", info.Index+1)) + " \u2502 "
 		}
 
 		if !m.ready {
@@ -159,13 +173,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				viewport.WithHeight(msg.Height-verticalMargins),
 			)
 			m.viewport.LeftGutterFunc = gutterFunc
-			m.viewport.SetContent(rendered)
+			m.viewport.SetContent(m.cachedRender)
 			m.ready = true
 		} else {
 			m.viewport.SetWidth(msg.Width)
 			m.viewport.SetHeight(msg.Height - verticalMargins)
 			m.viewport.LeftGutterFunc = gutterFunc
-			m.viewport.SetContent(rendered)
+			m.viewport.SetContent(m.cachedRender)
 		}
 
 		m.headings = markdown.ParseHeadings(m.rawMarkdown)
@@ -467,7 +481,6 @@ func (m *Model) jumpToPrevHeading() {
 func (m Model) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
 
 	if !m.ready {
 		v.SetContent("Loading...")
