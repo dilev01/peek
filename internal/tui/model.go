@@ -12,6 +12,14 @@ import (
 	"github.com/dilev01/peek/internal/markdown"
 )
 
+type inputMode int
+
+const (
+	modeNormal inputMode = iota
+	modeSearch
+	modeTextAnnotation
+)
+
 // Model is the main application model for peek.
 type Model struct {
 	viewport    viewport.Model
@@ -21,6 +29,12 @@ type Model struct {
 	height      int
 	keyMap      KeyMap
 	headings    []markdown.Heading
+
+	mode        inputMode
+	searchQuery string
+	searchInput string
+	matchLines  []int
+	matchIndex  int
 }
 
 // NewModel creates a new Model with the given markdown content.
@@ -83,13 +97,145 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.headings = markdown.ParseHeadings(m.rawMarkdown)
 
 	case tea.KeyPressMsg:
-		if key.Matches(msg, m.keyMap.Quit) {
-			return m, tea.Quit
+		switch m.mode {
+		case modeSearch:
+			return m.updateSearchMode(msg)
+		case modeTextAnnotation:
+			// Placeholder for future text annotation input handling
+			if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
+				m.mode = modeNormal
+				return m, nil
+			}
+			return m, nil
+		default:
+			return m.updateNormalMode(msg)
 		}
 	}
 
 	m.viewport, cmd = m.viewport.Update(msg)
 	return m, cmd
+}
+
+// updateSearchMode handles key events while in search input mode.
+func (m Model) updateSearchMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := msg.String()
+	switch s {
+	case "enter":
+		m.mode = modeNormal
+		m.searchQuery = m.searchInput
+		if m.searchQuery != "" {
+			m.matchLines = findLineMatches(m.rawMarkdown, m.searchQuery)
+			m.matchIndex = 0
+			if len(m.matchLines) > 0 {
+				m.viewport.SetYOffset(m.matchLines[0])
+			}
+		} else {
+			m.matchLines = nil
+			m.matchIndex = 0
+		}
+		return m, nil
+	case "esc":
+		m.mode = modeNormal
+		m.searchInput = ""
+		return m, nil
+	case "backspace":
+		if len(m.searchInput) > 0 {
+			m.searchInput = m.searchInput[:len(m.searchInput)-1]
+		}
+		return m, nil
+	default:
+		// Only accept printable single characters
+		if len(s) == 1 {
+			m.searchInput += s
+		}
+		return m, nil
+	}
+}
+
+// updateNormalMode handles key events in normal viewing mode.
+func (m Model) updateNormalMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+
+	switch {
+	case key.Matches(msg, m.keyMap.Quit):
+		return m, tea.Quit
+
+	case key.Matches(msg, m.keyMap.Search):
+		m.mode = modeSearch
+		m.searchInput = ""
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.SearchNext):
+		if len(m.matchLines) > 0 {
+			m.matchIndex = (m.matchIndex + 1) % len(m.matchLines)
+			m.viewport.SetYOffset(m.matchLines[m.matchIndex])
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.SearchPrev):
+		if len(m.matchLines) > 0 {
+			m.matchIndex--
+			if m.matchIndex < 0 {
+				m.matchIndex = len(m.matchLines) - 1
+			}
+			m.viewport.SetYOffset(m.matchLines[m.matchIndex])
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.GotoBottom):
+		m.viewport.GotoBottom()
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.GotoTop):
+		m.viewport.GotoTop()
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.HalfPageDown):
+		m.viewport.HalfPageDown()
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.HalfPageUp):
+		m.viewport.HalfPageUp()
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.NextHeading):
+		m.jumpToNextHeading()
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.PrevHeading):
+		m.jumpToPrevHeading()
+		return m, nil
+
+	case key.Matches(msg, m.keyMap.TextAnnotation):
+		m.mode = modeTextAnnotation
+		return m, nil
+	}
+
+	// Delegate remaining keys (j/k/up/down/pgup/pgdn/mouse) to viewport
+	m.viewport, cmd = m.viewport.Update(msg)
+	return m, cmd
+}
+
+// jumpToNextHeading moves the viewport to the next heading after the current position.
+func (m *Model) jumpToNextHeading() {
+	current := m.viewport.YOffset()
+	for _, h := range m.headings {
+		if h.Line > current {
+			m.viewport.SetYOffset(h.Line)
+			return
+		}
+	}
+}
+
+// jumpToPrevHeading moves the viewport to the previous heading before the current position.
+func (m *Model) jumpToPrevHeading() {
+	current := m.viewport.YOffset()
+	for i := len(m.headings) - 1; i >= 0; i-- {
+		if m.headings[i].Line < current {
+			m.viewport.SetYOffset(m.headings[i].Line)
+			return
+		}
+	}
 }
 
 // View renders the UI.
@@ -115,11 +261,27 @@ func (m Model) View() tea.View {
 		Foreground(lipgloss.Color("243")).
 		Width(m.width)
 
-	scrollPct := m.viewport.ScrollPercent() * 100
-	footerContent := fmt.Sprintf(" Line %d  %.0f%%", m.viewport.YOffset()+1, scrollPct)
+	footerContent := m.footerContent()
 	footer := footerStyle.Render(footerContent)
 
 	content := strings.Join([]string{header, m.viewport.View(), footer}, "\n")
 	v.SetContent(content)
 	return v
+}
+
+// footerContent returns the formatted footer string based on the current mode.
+func (m Model) footerContent() string {
+	scrollPct := m.viewport.ScrollPercent() * 100
+	lineNum := m.viewport.YOffset() + 1
+
+	switch m.mode {
+	case modeSearch:
+		return fmt.Sprintf(" /%s\u2588", m.searchInput)
+	default:
+		if len(m.matchLines) > 0 && m.searchQuery != "" {
+			return fmt.Sprintf(" [%d/%d] %q  L:%d  %.0f%%",
+				m.matchIndex+1, len(m.matchLines), m.searchQuery, lineNum, scrollPct)
+		}
+		return fmt.Sprintf(" L:%d  %.0f%%", lineNum, scrollPct)
+	}
 }
