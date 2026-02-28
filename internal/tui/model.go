@@ -1,14 +1,17 @@
 package tui
 
 import (
+	"crypto/rand"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/dilev01/peek/internal/annotation"
 	"github.com/dilev01/peek/internal/markdown"
 )
 
@@ -35,6 +38,9 @@ type Model struct {
 	searchInput string
 	matchLines  []int
 	matchIndex  int
+
+	annotations *annotation.MemoryStore
+	textInput   string
 }
 
 // NewModel creates a new Model with the given markdown content.
@@ -42,7 +48,15 @@ func NewModel(markdown string) Model {
 	return Model{
 		rawMarkdown: markdown,
 		keyMap:      DefaultKeyMap,
+		annotations: annotation.NewMemoryStore(),
 	}
+}
+
+// generateID creates a random hex ID for annotations.
+func generateID() string {
+	b := make([]byte, 6)
+	rand.Read(b)
+	return fmt.Sprintf("%x", b)
 }
 
 // Init satisfies the tea.Model interface.
@@ -101,12 +115,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case modeSearch:
 			return m.updateSearchMode(msg)
 		case modeTextAnnotation:
-			// Placeholder for future text annotation input handling
-			if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
-				m.mode = modeNormal
-				return m, nil
-			}
-			return m, nil
+			return m.updateTextAnnotationMode(msg)
 		default:
 			return m.updateNormalMode(msg)
 		}
@@ -147,6 +156,41 @@ func (m Model) updateSearchMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Only accept printable single characters
 		if len(s) == 1 {
 			m.searchInput += s
+		}
+		return m, nil
+	}
+}
+
+// updateTextAnnotationMode handles key events while in text annotation input mode.
+func (m Model) updateTextAnnotationMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	s := msg.String()
+	switch s {
+	case "enter":
+		if m.textInput != "" {
+			a := annotation.Annotation{
+				ID:        generateID(),
+				Line:      m.viewport.YOffset(),
+				Type:      annotation.TypeText,
+				Text:      m.textInput,
+				Timestamp: time.Now(),
+			}
+			m.annotations.Add(a.Line, a)
+		}
+		m.mode = modeNormal
+		m.textInput = ""
+		return m, nil
+	case "esc":
+		m.mode = modeNormal
+		m.textInput = ""
+		return m, nil
+	case "backspace":
+		if len(m.textInput) > 0 {
+			m.textInput = m.textInput[:len(m.textInput)-1]
+		}
+		return m, nil
+	default:
+		if len(s) == 1 {
+			m.textInput += s
 		}
 		return m, nil
 	}
@@ -208,7 +252,9 @@ func (m Model) updateNormalMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keyMap.TextAnnotation):
 		m.mode = modeTextAnnotation
+		m.textInput = ""
 		return m, nil
+
 	}
 
 	// Delegate remaining keys (j/k/up/down/pgup/pgdn/mouse) to viewport
@@ -277,6 +323,8 @@ func (m Model) footerContent() string {
 	switch m.mode {
 	case modeSearch:
 		return fmt.Sprintf(" /%s\u2588", m.searchInput)
+	case modeTextAnnotation:
+		return fmt.Sprintf(" \U0001f4dd L:%d > %s\u2588", lineNum, m.textInput)
 	default:
 		if len(m.matchLines) > 0 && m.searchQuery != "" {
 			return fmt.Sprintf(" [%d/%d] %q  L:%d  %.0f%%",
