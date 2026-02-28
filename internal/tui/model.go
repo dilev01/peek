@@ -20,6 +20,7 @@ type Model struct {
 	width       int
 	height      int
 	keyMap      KeyMap
+	headings    []markdown.Heading
 }
 
 // NewModel creates a new Model with the given markdown content.
@@ -53,18 +54,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			rendered = m.rawMarkdown
 		}
 
+		gutterFunc := func(info viewport.GutterContext) string {
+			if info.Soft {
+				return "     " + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("\u2502") + " "
+			}
+			if info.Index >= info.TotalLines {
+				return "   ~ " + lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("\u2502") + " "
+			}
+			style := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+			return style.Render(fmt.Sprintf("%4d", info.Index+1)) + " \u2502 "
+		}
+
 		if !m.ready {
 			m.viewport = viewport.New(
 				viewport.WithWidth(msg.Width),
 				viewport.WithHeight(msg.Height-verticalMargins),
 			)
+			m.viewport.LeftGutterFunc = gutterFunc
 			m.viewport.SetContent(rendered)
 			m.ready = true
 		} else {
 			m.viewport.SetWidth(msg.Width)
 			m.viewport.SetHeight(msg.Height - verticalMargins)
+			m.viewport.LeftGutterFunc = gutterFunc
 			m.viewport.SetContent(rendered)
 		}
+
+		m.headings = markdown.ParseHeadings(m.rawMarkdown)
 
 	case tea.KeyPressMsg:
 		if key.Matches(msg, m.keyMap.Quit) {
