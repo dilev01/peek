@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -45,6 +46,9 @@ func main() {
 		if filePath == "" {
 			return
 		}
+		// Flush terminal input between picker and reader to prevent
+		// escape sequences from the picker's shutdown leaking through.
+		flushInput()
 	} else {
 		filePath = mostRecentPlan()
 	}
@@ -214,6 +218,11 @@ func stripANSI(s string) string {
 		}
 	}
 	return result.String()
+}
+
+// flushInput clears any buffered terminal input using tcflush.
+func flushInput() {
+	exec.Command("python3", "-c", "import termios; termios.tcflush(0, termios.TCIFLUSH)").Run()
 }
 
 // hasTTY checks if we can actually open /dev/tty.
