@@ -1,23 +1,26 @@
 #!/bin/bash
-# Open peek in a new Terminal.app window.
-# Uses a .command file to guarantee a new window (not a tab).
+# Open peek in a new Terminal.app tab/window.
 # Usage: peek-open <file.md>
 # Usage: peek-open --find <keyword>
 
 PEEK_BIN="$HOME/personal/peek/bin/peek"
 
-# Create a temporary .command file — Terminal.app always opens these in a new window.
-TMPSCRIPT=$(mktemp /tmp/peek-run-XXXXXX)
-mv "$TMPSCRIPT" "${TMPSCRIPT}.command"
-TMPSCRIPT="${TMPSCRIPT}.command"
-
-cat > "$TMPSCRIPT" << EOF
+# Write runner with embedded args at a short fixed path.
+# Uses tcflush to properly clear the kernel's TTY input buffer —
+# non-blocking reads don't work in cooked mode.
+cat > /tmp/.pk << INNER
 #!/bin/bash
-clear
+sleep 1
+python3 -c "import termios; termios.tcflush(0, termios.TCIFLUSH)" 2>/dev/null
 "$PEEK_BIN" $@
-rm "\$0"
-exit
-EOF
-chmod +x "$TMPSCRIPT"
+rm -f /tmp/.pk
+osascript -e 'tell application "Terminal" to close front window'
+INNER
+chmod +x /tmp/.pk
 
-open "$TMPSCRIPT"
+osascript -e '
+tell application "Terminal"
+    do script "/tmp/.pk"
+    activate
+end tell
+'
