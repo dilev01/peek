@@ -1,10 +1,12 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/dilev01/peek/internal/audio"
@@ -15,20 +17,34 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--version" {
+	findFlag := flag.String("find", "", "fuzzy-match a file in docs/plans/ by keyword")
+	versionFlag := flag.Bool("version", false, "print version")
+	flag.Parse()
+
+	if *versionFlag {
 		fmt.Printf("peek v%s\n", version)
 		return
 	}
 
-	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: peek <file.md>")
+	var filePath string
+
+	if *findFlag != "" {
+		filePath = findPlanFile(*findFlag)
+	} else if flag.NArg() > 0 {
+		filePath = flag.Arg(0)
+	} else {
+		filePath = mostRecentPlan()
+	}
+
+	if filePath == "" {
+		fmt.Fprintln(os.Stderr, "no markdown file found")
+		fmt.Fprintln(os.Stderr, "usage: peek [file.md] [--find keyword] [--version]")
 		os.Exit(1)
 	}
 
-	filePath := os.Args[1]
 	content, err := os.ReadFile(filePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error reading file: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -67,4 +83,42 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func findPlanFile(keyword string) string {
+	pattern := fmt.Sprintf("docs/plans/*%s*.md", strings.ToLower(keyword))
+	matches, _ := filepath.Glob(pattern)
+	if len(matches) == 0 {
+		// Try from current directory
+		pattern = fmt.Sprintf("*%s*.md", strings.ToLower(keyword))
+		matches, _ = filepath.Glob(pattern)
+	}
+	if len(matches) == 0 {
+		return ""
+	}
+	return newestFile(matches)
+}
+
+func mostRecentPlan() string {
+	matches, _ := filepath.Glob("docs/plans/*.md")
+	if len(matches) == 0 {
+		return ""
+	}
+	return newestFile(matches)
+}
+
+func newestFile(files []string) string {
+	var newest string
+	var newestTime time.Time
+	for _, f := range files {
+		info, err := os.Stat(f)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newestTime) {
+			newestTime = info.ModTime()
+			newest = f
+		}
+	}
+	return newest
 }
