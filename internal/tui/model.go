@@ -36,9 +36,6 @@ const (
 	modeTextAnnotation
 )
 
-// inputReadyMsg signals that startup is complete and input should be accepted.
-type inputReadyMsg struct{}
-
 // voiceTranscriptionResult is the message returned after recording and transcription complete.
 type voiceTranscriptionResult struct {
 	text      string
@@ -81,10 +78,9 @@ type Model struct {
 	processing  bool
 	lastResult  string
 	audioDir    string
-	filePath    string
-	startTime   time.Time
-	inputReady  bool
-	exitResult  *ExitResult
+	filePath   string
+	startTime  time.Time
+	exitResult *ExitResult
 
 	// Cached render state: avoid re-rendering markdown when width hasn't changed.
 	cachedRender      string
@@ -137,12 +133,8 @@ func truncate(s string, max int) string {
 }
 
 // Init satisfies the tea.Model interface.
-// Fires a delayed message to start accepting input after Terminal.app's
-// leaked escape sequences have been flushed.
 func (m Model) Init() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-		return inputReadyMsg{}
-	})
+	return nil
 }
 
 // Update handles messages and updates the model accordingly.
@@ -242,16 +234,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case inputReadyMsg:
-		m.inputReady = true
-		return m, nil
-
 	case tea.KeyPressMsg:
-		// Ignore input until startup timer fires — Terminal.app leaks escape
-		// sequences into the TTY input buffer when launching via "do script".
-		if !m.inputReady {
-			return m, nil
-		}
 		switch m.mode {
 		case modeSearch:
 			return m.updateSearchMode(msg)
