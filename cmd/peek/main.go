@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dilev01/peek/internal/annotation"
 	"github.com/dilev01/peek/internal/audio"
 	"github.com/dilev01/peek/internal/tui"
 	"github.com/dilev01/peek/internal/voice"
@@ -79,9 +80,16 @@ func main() {
 
 	m := tui.NewModel(cfg)
 	p := tea.NewProgram(m)
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
+	}
+
+	if fm, ok := finalModel.(tui.Model); ok {
+		if result := fm.GetExitResult(); result != nil && len(result.Annotations) > 0 {
+			fmt.Print(annotation.FormatSummary(result.FilePath, result.Duration, result.Annotations))
+		}
 	}
 }
 

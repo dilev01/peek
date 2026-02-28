@@ -34,6 +34,13 @@ type voiceTranscriptionResult struct {
 	err       error
 }
 
+// ExitResult holds data collected at quit time for sidecar/summary output.
+type ExitResult struct {
+	Annotations []annotation.Annotation
+	Duration    time.Duration
+	FilePath    string
+}
+
 // Model is the main application model for peek.
 type Model struct {
 	viewport    viewport.Model
@@ -64,6 +71,7 @@ type Model struct {
 	audioDir    string
 	filePath    string
 	startTime   time.Time
+	exitResult  *ExitResult
 }
 
 // ModelConfig holds configuration for creating a new Model.
@@ -89,6 +97,11 @@ func NewModel(cfg ModelConfig) Model {
 		keyMap:      DefaultKeyMap,
 		startTime:   time.Now(),
 	}
+}
+
+// GetExitResult returns the exit result collected at quit time.
+func (m Model) GetExitResult() *ExitResult {
+	return m.exitResult
 }
 
 // generateID creates a random hex ID for annotations.
@@ -294,6 +307,20 @@ func (m Model) updateNormalMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, m.keyMap.Quit):
+		duration := time.Since(m.startTime)
+		allAnnotations := m.annotations.GetAll()
+		m.exitResult = &ExitResult{
+			Annotations: allAnnotations,
+			Duration:    duration,
+			FilePath:    m.filePath,
+		}
+
+		// Write sidecar JSON
+		if len(allAnnotations) > 0 {
+			sidecarPath := strings.TrimSuffix(m.filePath, ".md") + ".peek.json"
+			annotation.WriteSidecar(sidecarPath, m.filePath, duration, allAnnotations)
+		}
+
 		return m, tea.Quit
 
 	case key.Matches(msg, m.keyMap.VoiceToggle):
