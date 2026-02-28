@@ -1,0 +1,13 @@
+#!/bin/bash
+# Open peek in a new Terminal.app window.
+# Usage: peek-open <file.md>
+# Usage: peek-open --find <keyword>
+
+PEEK_BIN="$HOME/personal/peek/bin/peek"
+
+osascript -e "
+tell application \"Terminal\"
+    activate
+    do script \"'$PEEK_BIN' $*; exit\"
+end tell
+"
