@@ -7,6 +7,8 @@ require (
 	charm.land/bubbletea/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.0
 	github.com/charmbracelet/glamour v0.10.0
+	github.com/faiface/beep v1.1.0
+	github.com/gordonklaus/portaudio v0.0.0-20260203164431-765aa7dfa631
 )
 
 require (
@@ -25,8 +27,6 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/dlclark/regexp2 v1.11.0 // indirect
-	github.com/faiface/beep v1.1.0 // indirect
-	github.com/gordonklaus/portaudio v0.0.0-20260203164431-765aa7dfa631 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/hajimehoshi/oto v0.7.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
@@ -49,4 +49,5 @@ require (
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/term v0.31.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
