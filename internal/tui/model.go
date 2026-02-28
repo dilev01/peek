@@ -36,6 +36,13 @@ const (
 	modeTextAnnotation
 )
 
+type appPhase int
+
+const (
+	phaseReader appPhase = iota
+	phasePicker
+)
+
 // voiceTranscriptionResult is the message returned after recording and transcription complete.
 type voiceTranscriptionResult struct {
 	text      string
@@ -85,6 +92,11 @@ type Model struct {
 	// Cached render state: avoid re-rendering markdown when width hasn't changed.
 	cachedRender      string
 	cachedRenderWidth int
+
+	// Picker phase (when no file specified on startup).
+	phase       appPhase
+	pickerFiles []FileEntry
+	pickerIdx   int
 }
 
 // ModelConfig holds configuration for creating a new Model.
@@ -95,11 +107,12 @@ type ModelConfig struct {
 	Transcriber voice.Transcriber
 	Player      audio.Player
 	AudioDir    string
+	PlanDir     string // if set, start in picker phase
 }
 
 // NewModel creates a new Model with the given configuration.
 func NewModel(cfg ModelConfig) Model {
-	return Model{
+	m := Model{
 		rawMarkdown: cfg.Markdown,
 		filePath:    cfg.FilePath,
 		annotations: annotation.NewMemoryStore(),
@@ -110,11 +123,38 @@ func NewModel(cfg ModelConfig) Model {
 		keyMap:      DefaultKeyMap,
 		startTime:   time.Now(),
 	}
+	if cfg.PlanDir != "" {
+		m.phase = phasePicker
+		m.pickerFiles = findPlans(cfg.PlanDir)
+	}
+	return m
 }
 
 // GetExitResult returns the exit result collected at quit time.
 func (m Model) GetExitResult() *ExitResult {
 	return m.exitResult
+}
+
+// Quit returns true if the user quit from the picker without selecting a file.
+func (m Model) Quit() bool {
+	return m.phase == phasePicker && m.filePath == ""
+}
+
+// loadFile transitions from picker to reader phase with the selected file.
+func (m Model) loadFile(path string) (Model, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return m, err
+	}
+	m.phase = phaseReader
+	m.rawMarkdown = string(content)
+	m.filePath = path
+	m.ready = false // force viewport setup on next WindowSizeMsg
+	m.startTime = time.Now()
+
+	baseName := strings.TrimSuffix(filepath.Base(path), ".md")
+	m.audioDir = filepath.Join(filepath.Dir(path), ".peek", baseName)
+	return m, nil
 }
 
 // generateID creates a random hex ID for annotations.
@@ -139,6 +179,10 @@ func (m Model) Init() tea.Cmd {
 
 // Update handles messages and updates the model accordingly.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.phase == phasePicker {
+		return m.updatePicker(msg)
+	}
+
 	var cmd tea.Cmd
 
 	switch msg := msg.(type) {
@@ -249,6 +293,133 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updatePicker handles messages while in picker phase.
+func (m Model) updatePicker(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.ready = true
+		return m, nil
+
+	case tea.KeyPressMsg:
+		// Discard key events until we're fully initialized (have received WindowSizeMsg).
+		if !m.ready {
+			return m, nil
+		}
+		switch {
+		case key.Matches(msg, key.NewBinding(key.WithKeys("q", "esc", "ctrl+c"))):
+			return m, tea.Quit
+		case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
+			if len(m.pickerFiles) > 0 {
+				m2, err := m.loadFile(m.pickerFiles[m.pickerIdx].Path)
+				if err != nil {
+					return m, tea.Quit
+				}
+				// Request a fresh WindowSizeMsg to set up the viewport.
+				return m2, tea.RequestWindowSize
+			}
+			return m, tea.Quit
+		case key.Matches(msg, key.NewBinding(key.WithKeys("j", "down"))):
+			if m.pickerIdx < len(m.pickerFiles)-1 {
+				m.pickerIdx++
+			}
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("k", "up"))):
+			if m.pickerIdx > 0 {
+				m.pickerIdx--
+			}
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("g", "home"))):
+			m.pickerIdx = 0
+			return m, nil
+		case key.Matches(msg, key.NewBinding(key.WithKeys("G", "end"))):
+			if len(m.pickerFiles) > 0 {
+				m.pickerIdx = len(m.pickerFiles) - 1
+			}
+			return m, nil
+		}
+	}
+	return m, nil
+}
+
+// viewPicker renders the file picker screen.
+func (m Model) viewPicker() tea.View {
+	var v tea.View
+	v.AltScreen = true
+
+	if !m.ready {
+		v.SetContent("Loading...")
+		return v
+	}
+
+	headerStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("62")).
+		Foreground(lipgloss.Color("230")).
+		Width(m.width)
+
+	header := headerStyle.Render(" peek \u2014 select a plan")
+
+	var body strings.Builder
+	body.WriteString("\n")
+
+	if len(m.pickerFiles) == 0 {
+		body.WriteString("  No markdown files found in docs/plans/\n")
+	}
+
+	visibleLines := m.height - 4
+	if visibleLines < 1 {
+		visibleLines = 1
+	}
+
+	scrollOffset := 0
+	if m.pickerIdx >= visibleLines {
+		scrollOffset = m.pickerIdx - visibleLines + 1
+	}
+
+	normalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	selectedStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("229")).
+		Bold(true)
+	dateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	for i := scrollOffset; i < len(m.pickerFiles) && i < scrollOffset+visibleLines; i++ {
+		f := m.pickerFiles[i]
+		indicator := "  "
+		style := normalStyle
+		if i == m.pickerIdx {
+			indicator = "\u25b8 "
+			style = selectedStyle
+		}
+
+		name := strings.TrimSuffix(f.Name, ".md")
+		date := f.ModTime.Format("Jan 02 15:04")
+		line := fmt.Sprintf("%s%-50s %s", indicator, name, dateStyle.Render(date))
+		body.WriteString(style.Render(line))
+		body.WriteString("\n")
+	}
+
+	footerStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("236")).
+		Foreground(lipgloss.Color("243")).
+		Width(m.width)
+
+	footerText := fmt.Sprintf(" %d files \u2502 \u2191\u2193 navigate \u2502 enter select \u2502 q quit", len(m.pickerFiles))
+	footer := footerStyle.Render(footerText)
+
+	bodyStr := body.String()
+	bodyLines := strings.Count(bodyStr, "\n")
+	for bodyLines < m.height-2 {
+		bodyStr += "\n"
+		bodyLines++
+	}
+
+	content := strings.Join([]string{header, bodyStr, footer}, "")
+	v.SetContent(content)
+	return v
+}
+
 // updateSearchMode handles key events while in search input mode.
 func (m Model) updateSearchMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	s := msg.String()
@@ -276,8 +447,10 @@ func (m Model) updateSearchMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.searchInput = m.searchInput[:len(m.searchInput)-1]
 		}
 		return m, nil
+	case "space":
+		m.searchInput += " "
+		return m, nil
 	default:
-		// Only accept printable single characters
 		if len(s) == 1 {
 			m.searchInput += s
 		}
@@ -311,6 +484,9 @@ func (m Model) updateTextAnnotationMode(msg tea.KeyPressMsg) (tea.Model, tea.Cmd
 		if len(m.textInput) > 0 {
 			m.textInput = m.textInput[:len(m.textInput)-1]
 		}
+		return m, nil
+	case "space":
+		m.textInput += " "
 		return m, nil
 	default:
 		if len(s) == 1 {
@@ -482,8 +658,12 @@ func (m *Model) jumpToPrevHeading() {
 	}
 }
 
-// View renders the UI.
+// View renders the UI. Routes to picker or reader view based on phase.
 func (m Model) View() tea.View {
+	if m.phase == phasePicker {
+		return m.viewPicker()
+	}
+
 	var v tea.View
 	v.AltScreen = true
 

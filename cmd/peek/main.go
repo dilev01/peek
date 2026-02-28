@@ -4,12 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 	"github.com/dilev01/peek/internal/annotation"
 	"github.com/dilev01/peek/internal/audio"
 	"github.com/dilev01/peek/internal/markdown"
@@ -35,46 +35,44 @@ func main() {
 	}
 
 	var filePath string
+	showPicker := false
 
 	if *findFlag != "" {
 		filePath = findPlanFile(*findFlag)
 	} else if flag.NArg() > 0 {
 		filePath = flag.Arg(0)
 	} else if hasTTY() && !*tocFlag && *pageFlag == 0 {
-		// Interactive mode with no file specified: show file picker
-		filePath = runPicker()
-		if filePath == "" {
-			return
-		}
-		// Flush terminal input between picker and reader to prevent
-		// escape sequences from the picker's shutdown leaking through.
-		flushInput()
+		// Interactive mode with no file specified: show picker inside the TUI
+		showPicker = true
 	} else {
 		filePath = mostRecentPlan()
 	}
 
-	if filePath == "" {
+	// Non-interactive modes that need a file upfront
+	if !showPicker && filePath == "" {
 		fmt.Fprintln(os.Stderr, "no markdown file found")
 		fmt.Fprintln(os.Stderr, "usage: peek [file.md] [--find keyword] [--version] [--page N] [--toc]")
 		os.Exit(1)
 	}
 
-	content, err := os.ReadFile(filePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error reading file: %v\n", err)
-		os.Exit(1)
-	}
+	if !showPicker {
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading file: %v\n", err)
+			os.Exit(1)
+		}
 
-	// --toc: print table of contents with page numbers
-	if *tocFlag {
-		printTOC(string(content), filePath, *pageSizeFlag)
-		return
-	}
+		// --toc: print table of contents with page numbers
+		if *tocFlag {
+			printTOC(string(content), filePath, *pageSizeFlag)
+			return
+		}
 
-	// No TTY or --page flag → render markdown to stdout in pages
-	if !hasTTY() || *pageFlag > 0 {
-		renderPage(string(content), filePath, *pageFlag, *pageSizeFlag)
-		return
+		// No TTY or --page flag → render markdown to stdout in pages
+		if !hasTTY() || *pageFlag > 0 {
+			renderPage(string(content), filePath, *pageFlag, *pageSizeFlag)
+			return
+		}
 	}
 
 	// Interactive TUI mode (real terminal)
@@ -86,9 +84,6 @@ func main() {
 	}
 	defer audio.Terminate()
 
-	baseName := strings.TrimSuffix(filepath.Base(filePath), ".md")
-	audioDir := filepath.Join(filepath.Dir(filePath), ".peek", baseName)
-
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	var transcriber voice.Transcriber
 	if apiKey != "" {
@@ -96,16 +91,23 @@ func main() {
 	}
 
 	cfg := tui.ModelConfig{
-		Markdown:    string(content),
-		FilePath:    filePath,
 		Recorder:    recorder,
 		Transcriber: transcriber,
 		Player:      audio.NewBeepPlayer(),
-		AudioDir:    audioDir,
+	}
+
+	if showPicker {
+		cfg.PlanDir = "docs/plans"
+	} else {
+		content, _ := os.ReadFile(filePath)
+		cfg.Markdown = string(content)
+		cfg.FilePath = filePath
+		baseName := strings.TrimSuffix(filepath.Base(filePath), ".md")
+		cfg.AudioDir = filepath.Join(filepath.Dir(filePath), ".peek", baseName)
 	}
 
 	m := tui.NewModel(cfg)
-	p := tea.NewProgram(m)
+	p := tea.NewProgram(m, tea.WithColorProfile(colorprofile.TrueColor))
 	finalModel, err := p.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -113,6 +115,9 @@ func main() {
 	}
 
 	if fm, ok := finalModel.(tui.Model); ok {
+		if fm.Quit() {
+			return
+		}
 		if result := fm.GetExitResult(); result != nil && len(result.Annotations) > 0 {
 			fmt.Print(annotation.FormatSummary(result.FilePath, result.Duration, result.Annotations))
 		}
@@ -220,11 +225,6 @@ func stripANSI(s string) string {
 	return result.String()
 }
 
-// flushInput clears any buffered terminal input using tcflush.
-func flushInput() {
-	exec.Command("python3", "-c", "import termios; termios.tcflush(0, termios.TCIFLUSH)").Run()
-}
-
 // hasTTY checks if we can actually open /dev/tty.
 func hasTTY() bool {
 	f, err := os.Open("/dev/tty")
@@ -233,30 +233,6 @@ func hasTTY() bool {
 	}
 	f.Close()
 	return true
-}
-
-func runPicker() string {
-	dir := "docs/plans"
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		// Fall back to most recent plan if docs/plans doesn't exist
-		return mostRecentPlan()
-	}
-
-	picker := tui.NewPickerModel(dir)
-	p := tea.NewProgram(picker)
-	finalModel, err := p.Run()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "picker error: %v\n", err)
-		return ""
-	}
-
-	if pm, ok := finalModel.(tui.PickerModel); ok {
-		if pm.Quit() {
-			return ""
-		}
-		return pm.SelectedFile()
-	}
-	return ""
 }
 
 func findPlanFile(keyword string) string {
