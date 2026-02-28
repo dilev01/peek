@@ -39,6 +39,12 @@ func main() {
 		filePath = findPlanFile(*findFlag)
 	} else if flag.NArg() > 0 {
 		filePath = flag.Arg(0)
+	} else if hasTTY() && !*tocFlag && *pageFlag == 0 {
+		// Interactive mode with no file specified: show file picker
+		filePath = runPicker()
+		if filePath == "" {
+			return
+		}
 	} else {
 		filePath = mostRecentPlan()
 	}
@@ -218,6 +224,30 @@ func hasTTY() bool {
 	}
 	f.Close()
 	return true
+}
+
+func runPicker() string {
+	dir := "docs/plans"
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		// Fall back to most recent plan if docs/plans doesn't exist
+		return mostRecentPlan()
+	}
+
+	picker := tui.NewPickerModel(dir)
+	p := tea.NewProgram(picker)
+	finalModel, err := p.Run()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "picker error: %v\n", err)
+		return ""
+	}
+
+	if pm, ok := finalModel.(tui.PickerModel); ok {
+		if pm.Quit() {
+			return ""
+		}
+		return pm.SelectedFile()
+	}
+	return ""
 }
 
 func findPlanFile(keyword string) string {
